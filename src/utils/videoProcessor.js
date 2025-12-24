@@ -132,6 +132,21 @@ export async function processVideo(videoFile, onProgress) {
         // Cleanup URL when done
         const cleanup = () => URL.revokeObjectURL(video.src);
 
+        video.onerror = (e) => {
+            cleanup();
+            console.error("Video processing error:", video.error);
+            const errorCode = video.error ? video.error.code : 'unknown';
+            let errorMessage = `Video error code: ${errorCode}`;
+
+            if (errorCode === 3) {
+                errorMessage = "Decoding error: The video signal is corrupted or format not supported.";
+            } else if (errorCode === 4) {
+                errorMessage = "Format not supported: Browser cannot play this video type.";
+            }
+
+            reject(new Error(errorMessage));
+        };
+
         video.onloadedmetadata = async () => {
             canvas.width = SAMPLE_WIDTH;
             canvas.height = SAMPLE_HEIGHT;
@@ -139,7 +154,7 @@ export async function processVideo(videoFile, onProgress) {
             const duration = video.duration;
             if (!duration || duration === Infinity) {
                 cleanup();
-                reject(new Error("Could not determine video duration"));
+                reject(new Error("Could not determine video duration. Try a different file format."));
                 return;
             }
 
@@ -177,23 +192,11 @@ export async function processVideo(videoFile, onProgress) {
                 onProgress(Math.round((currentFrame / FRAME_COUNT) * 100));
 
                 // Schedule next frame (allow UI to breathe)
-                // Using requestAnimationFrame to unblock main thread slightly
-                // or setTimeout(..., 0)
                 setTimeout(processFrame, 0);
-            };
-
-            video.onerror = (e) => {
-                cleanup();
-                reject(e);
             };
 
             // Start processing
             processFrame();
-        };
-
-        video.onerror = () => {
-            cleanup();
-            reject(new Error("Failed to load video"));
         };
     });
 }
