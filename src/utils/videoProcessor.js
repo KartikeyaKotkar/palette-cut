@@ -200,6 +200,7 @@ async function processVideoFFmpeg(videoFile, onProgress) {
         console.log("Loading FFmpeg...");
         // Just usage default CDN
         await ffmpeg.load();
+        console.log("FFmpeg loaded successfully.");
     }
 
     // File size check: > 1GB might be dangerous
