@@ -21,7 +21,7 @@ By sampling frames across the full duration of a video, the project creates a mi
 - HTML5 Video & Canvas API
 - Tailwind CSS
 - html2canvas
-
+- ffmpeg.wasm
 ## Design Philosophy
 
 Palette Cut is designed as a digital art object rather than a traditional analytics tool.
