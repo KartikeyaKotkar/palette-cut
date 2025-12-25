@@ -4,7 +4,10 @@ Palette Cut is a client-side film color visualizer that distills an entire movie
 
 By sampling frames across the full duration of a video, the project creates a minimal, gallery-style representation of a film’s chromatic identity.
 
-![Image description](./src/assets/image.png)
+![Screenshot of Homepage](./src/assets/image.png)
+
+![End Result](./src/assets/image2.png)
+
 
 ## Features
 
