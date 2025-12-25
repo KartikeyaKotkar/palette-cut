@@ -30,7 +30,7 @@ The interface is intentionally minimal, allowing the film’s colors to be the f
 ## Running Locally
 
 ```bash
-git clone https://github.com/yourusername/palette-cut.git
+git clone https://github.com/KartikeyaKotkar/palette-cut.git
 cd palette-cut
 npm install
 npm run dev
