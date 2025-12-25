@@ -1,12 +1,19 @@
 /**
  * Video Processing Utilities
  * Handles loading video, extracting frames, and analyzing colors.
+ * Supports native codecs + MKV via FFmpeg.wasm
  */
 
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile } from '@ffmpeg/util';
+
 // Configuration
-const FRAME_COUNT = 240; // Total frames to sample (creates a nice density)
-const SAMPLE_WIDTH = 32; // Small size for faster processing
+const FRAME_COUNT = 240; // Total frames to sample
+const SAMPLE_WIDTH = 32;
 const SAMPLE_HEIGHT = 32;
+
+// Singleton FFmpeg instance
+let ffmpeg = null;
 
 /**
  * Calculates Euclidean distance between two colors
@@ -21,9 +28,6 @@ function colorDistance(c1, c2) {
 
 /**
  * Analyzes the color palette to find dominant and least used colors.
- * Uses a simple quantization/bucketing approach.
- * @param {Array} colors - Array of {r,g,b} objects
- * @returns {Object} { dominant: {r,g,b}, least: {r,g,b}, average: {r,g,b} }
  */
 export function analyzeColors(colors) {
     if (!colors || colors.length === 0) return null;
@@ -42,16 +46,14 @@ export function analyzeColors(colors) {
     };
 
     // 2. Quantize and count frequencies
-    // We'll bucket similar colors together to find true perceptual dominance
     const clusters = [];
-    const THRESHOLD = 30; // Color distance threshold
+    const THRESHOLD = 30;
 
     colors.forEach(color => {
         let found = false;
         for (let cluster of clusters) {
             if (colorDistance(color, cluster.center) < THRESHOLD) {
                 cluster.count++;
-                // Update center (moving average)
                 cluster.center.r = (cluster.center.r * (cluster.count - 1) + color.r) / cluster.count;
                 cluster.center.g = (cluster.center.g * (cluster.count - 1) + color.g) / cluster.count;
                 cluster.center.b = (cluster.center.b * (cluster.count - 1) + color.b) / cluster.count;
@@ -64,7 +66,6 @@ export function analyzeColors(colors) {
         }
     });
 
-    // Sort clusters by count
     clusters.sort((a, b) => b.count - a.count);
 
     const dominant = clusters[0].center;
@@ -77,11 +78,6 @@ export function analyzeColors(colors) {
     };
 }
 
-/**
- * Calculates the average color of an ImageData object.
- * @param {ImageData} imageData 
- * @returns {Object} {r, g, b}
- */
 function getAverageColor(imageData) {
     const data = imageData.data;
     let r = 0, g = 0, b = 0;
@@ -100,25 +96,33 @@ function getAverageColor(imageData) {
     };
 }
 
-/**
- * Converts RGB object to CSS string
- */
 export const rgbToCss = ({ r, g, b }) => `rgb(${r}, ${g}, ${b})`;
 
-/**
- * Converts RGB object to Hex string
- */
 export const rgbToHex = ({ r, g, b }) => {
     return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
 };
 
 /**
- * Processes a video file to extract a color ribbon.
- * @param {File} videoFile - The video file to process
- * @param {Function} onProgress - Callback (progress: number) => void
- * @returns {Promise<Array>} Array of {r,g,b} color objects
+ * Main entry point for video processing.
+ * Tries native first, falls back to FFmpeg.
  */
 export async function processVideo(videoFile, onProgress) {
+    try {
+        console.log("Attempting native processing...");
+        return await processVideoNative(videoFile, onProgress);
+    } catch (err) {
+        if (err.message && (err.message.includes("supported") || err.message.includes("video duration") || err.message.includes("format"))) {
+            console.warn("Native processing failed. Falling back to FFmpeg...", err);
+            return await processVideoFFmpeg(videoFile, onProgress);
+        }
+        throw err;
+    }
+}
+
+/**
+ * Native video element processing
+ */
+async function processVideoNative(videoFile, onProgress) {
     return new Promise((resolve, reject) => {
         const video = document.createElement('video');
         const canvas = document.createElement('canvas');
@@ -129,22 +133,12 @@ export async function processVideo(videoFile, onProgress) {
         video.playsInline = true;
         video.crossOrigin = "anonymous";
 
-        // Cleanup URL when done
         const cleanup = () => URL.revokeObjectURL(video.src);
 
         video.onerror = (e) => {
             cleanup();
-            console.error("Video processing error:", video.error);
-            const errorCode = video.error ? video.error.code : 'unknown';
-            let errorMessage = `Video error code: ${errorCode}`;
-
-            if (errorCode === 3) {
-                errorMessage = "Decoding error: The video signal is corrupted or format not supported.";
-            } else if (errorCode === 4) {
-                errorMessage = "Format not supported: Browser cannot play this video type.";
-            }
-
-            reject(new Error(errorMessage));
+            // Force fallback
+            reject(new Error("Format not supported"));
         };
 
         video.onloadedmetadata = async () => {
@@ -154,7 +148,7 @@ export async function processVideo(videoFile, onProgress) {
             const duration = video.duration;
             if (!duration || duration === Infinity) {
                 cleanup();
-                reject(new Error("Could not determine video duration. Try a different file format."));
+                reject(new Error("Could not determine video duration"));
                 return;
             }
 
@@ -169,34 +163,139 @@ export async function processVideo(videoFile, onProgress) {
                     return;
                 }
 
-                // Calculate seek time
                 const seekTime = Math.min(interval * currentFrame, duration - 0.1);
                 video.currentTime = seekTime;
             };
 
             video.onseeked = () => {
-                // Draw frame
                 ctx.drawImage(video, 0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
-
-                // Analyze color
                 try {
                     const imageData = ctx.getImageData(0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
-                    const avgColor = getAverageColor(imageData);
-                    colors.push(avgColor);
+                    colors.push(getAverageColor(imageData));
                 } catch (e) {
-                    console.warn("Frame extraction failed", e);
-                    colors.push({ r: 0, g: 0, b: 0 }); // Fallback
+                    colors.push({ r: 0, g: 0, b: 0 });
                 }
 
                 currentFrame++;
                 onProgress(Math.round((currentFrame / FRAME_COUNT) * 100));
-
-                // Schedule next frame (allow UI to breathe)
                 setTimeout(processFrame, 0);
             };
 
-            // Start processing
             processFrame();
         };
     });
+}
+
+/**
+ * FFmpeg.wasm processing
+ */
+async function processVideoFFmpeg(videoFile, onProgress) {
+    onProgress(1); // Started
+
+    if (!ffmpeg) {
+        ffmpeg = new FFmpeg();
+    }
+
+    if (!ffmpeg.loaded) {
+        console.log("Loading FFmpeg...");
+        // Just usage default CDN
+        await ffmpeg.load();
+    }
+
+    // File size check: > 1GB might be dangerous
+    if (videoFile.size > 1024 * 1024 * 1024) {
+        if (!confirm("This file is large (>1GB) and might crash your browser memory. Continue anyway?")) {
+            throw new Error("Processing cancelled by user due to file size.");
+        }
+    }
+
+    const inputName = 'input.' + (videoFile.name.split('.').pop() || 'mkv');
+    console.log("Writing file to memory...", inputName);
+    await ffmpeg.writeFile(inputName, await fetchFile(videoFile));
+
+    // 1. Probe for duration
+    let duration = 0;
+    const logHandler = ({ message }) => {
+        // Parse Duration: 00:00:00.00
+        const match = message.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
+        if (match) {
+            const hours = parseFloat(match[1]);
+            const minutes = parseFloat(match[2]);
+            const seconds = parseFloat(match[3]);
+            duration = hours * 3600 + minutes * 60 + seconds;
+        }
+    };
+
+    ffmpeg.on('log', logHandler);
+    await ffmpeg.exec(['-i', inputName]);
+    ffmpeg.off('log', logHandler);
+
+    if (duration === 0) {
+        // If probe failed, assume default or fail?
+        // Let's guess 2 hours if we really can't find it to avoid crash, but better to fail.
+        // Sometimes duration is not in metadata.
+        console.warn("Could not determine duration from FFmpeg probe.");
+        // try to proceed with a fixed fps guess? No.
+        // We can try to just extract frames at 1fps?
+        // Let's throw.
+        // throw new Error("Could not determine duration.");
+        // Fallback: Just assume standard film length?
+        duration = 7200; // 2 hours
+    }
+
+    console.log("Duration:", duration);
+
+    // 2. Extract Frames
+    // We want FRAME_COUNT frames.
+    // FPS = FRAME_COUNT / Duration.
+    const fps = FRAME_COUNT / duration;
+
+    console.log("Extracting with fps:", fps);
+    onProgress(10); // Prep done
+
+    // Output filename pattern: out001.png
+    await ffmpeg.exec([
+        '-i', inputName,
+        '-vf', `fps=${fps},scale=${SAMPLE_WIDTH}:${SAMPLE_HEIGHT}`,
+        'out%03d.png'
+    ]);
+
+    // 3. Read Frames and analyze
+    const colors = [];
+    const canvas = document.createElement('canvas');
+    canvas.width = SAMPLE_WIDTH;
+    canvas.height = SAMPLE_HEIGHT;
+    const ctx = canvas.getContext('2d');
+
+    // Attempt to read up to FRAME_COUNT + buffer, or until file not found
+    for (let i = 1; i <= FRAME_COUNT + 10; i++) {
+        const num = i.toString().padStart(3, '0');
+        const fileName = `out${num}.png`;
+
+        try {
+            const data = await ffmpeg.readFile(fileName);
+
+            // Convert to Blob and then ImageBitmap
+            const blob = new Blob([data.buffer], { type: 'image/png' });
+            const bmp = await createImageBitmap(blob);
+
+            ctx.drawImage(bmp, 0, 0);
+            const imageData = ctx.getImageData(0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
+            colors.push(getAverageColor(imageData));
+
+            // Cleanup file from memfs immediately to free memory
+            await ffmpeg.deleteFile(fileName);
+
+            onProgress(Math.round(10 + (i / FRAME_COUNT) * 80));
+        } catch (e) {
+            // File not found -> done
+            break;
+        }
+    }
+
+    // Cleanup input
+    await ffmpeg.deleteFile(inputName);
+
+    onProgress(100);
+    return colors;
 }

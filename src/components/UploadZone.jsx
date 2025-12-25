@@ -21,7 +21,7 @@ const UploadZone = ({ onFileSelected }) => {
     const handleDrop = (e) => {
         e.preventDefault();
         const file = e.dataTransfer.files?.[0];
-        if (file && file.type.startsWith('video/')) {
+        if (file && (file.type.startsWith('video/') || file.name.endsWith('.mkv'))) {
             onFileSelected(file);
         }
     };
@@ -50,7 +50,7 @@ const UploadZone = ({ onFileSelected }) => {
         >
             <input
                 type="file"
-                accept="video/*"
+                accept="video/*,.mkv"
                 ref={inputRef}
                 style={{ display: 'none' }}
                 onChange={handleChange}
